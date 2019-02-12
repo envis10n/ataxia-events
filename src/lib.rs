@@ -30,6 +30,7 @@ impl EventTask {
 }
 
 /// An asynchronous event loop that handles tasks.
+#[derive(Debug)]
 pub struct EventLoop {
     sender: Sender<EventTask>,
     running: bool
