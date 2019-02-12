@@ -40,18 +40,16 @@ impl EventLoop {
     pub fn new() -> EventLoop {
         let (tx, rx) = unbounded::<EventTask>();
         let eventloop = lazy(move || {
-            loop {
-                if let Ok(task) = rx.recv() {
-                    match task.event_type {
-                        EventType::None => (),
-                        EventType::End => break,
-                        EventType::Call => {
-                            if let Some(call) = task.payload {
-                                tokio::spawn(lazy(move || {
-                                    call();
-                                    fok::<(), ()>(())
-                                }));
-                            }
+            while let Ok(task) = rx.recv() {
+                match task.event_type {
+                    EventType::None => (),
+                    EventType::End => break,
+                    EventType::Call => {
+                        if let Some(call) = task.payload {
+                            tokio::spawn(lazy(move || {
+                                call();
+                                fok::<(), ()>(())
+                            }));
                         }
                     }
                 }
