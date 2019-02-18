@@ -13,8 +13,6 @@ pub type EventHooks = Arc<Mutex<BTreeMap<String, Closure>>>;
 pub enum EventType {
     None,
     End,
-    AddHook,
-    RemoveHook,
     Call
 }
 
@@ -47,58 +45,19 @@ impl EventLoop {
     /// Create and start a new EventLoop.
     pub fn new() -> EventLoop {
         let (tx, rx) = unbounded::<EventTask>();
-        let hookser: Arc<Mutex<BTreeMap<String, Closure>>> = Arc::new(Mutex::new(BTreeMap::new()));
         thread::spawn(move || {
-            let looper = loop_fn((), |t| {
-                let hooks_b = Arc::clone(&hookser);
-                tokio::spawn(lazy(move || {
-                    let hooks = Arc::clone(&hooks_b);
-                    let guard = hooks.lock().unwrap();
-                    for (key, cell) in (*guard).iter() {
-                        tokio::spawn(lazy(move || {
-                            cell();
-                            fok::<(),()>(())
-                        }));
-                    }
-                    fok::<(),()>(())
-                }));
+            loop_fn((), move |_t| {
                 if let Ok(task) = rx.recv() {
                     match task.event_type {
                         EventType::None => {
                             Ok::<Loop<(),()>, ()>(Loop::Continue(()))
                         },
                         EventType::End => {
-                            drop(rx);
                             Ok::<Loop<(),()>, ()>(Loop::Break(()))
                         },
                         EventType::Call => {
                             if let Some(call) = task.payload {
-                                tokio::spawn(lazy(move || {
-                                    call();
-                                    fok::<(), ()>(())
-                                }));
-                            }
-                            Ok::<Loop<(),()>, ()>(Loop::Continue(()))
-                        },
-                        EventType::AddHook => {
-                            if let Some(call) = task.payload {
-                                if let Some(options) = task.options {
-                                    let hooks = hooks_b.clone();
-                                    let muh = hooks.clone();
-                                    let mut guard = muh.lock().unwrap();
-                                    let name = options[0].clone();
-                                    (*guard).insert(name, call);
-                                }
-                            }
-                            Ok::<Loop<(),()>, ()>(Loop::Continue(()))
-                        },
-                        EventType::RemoveHook => {
-                            if let Some(options) = task.options {
-                                let hooks = hooks_b.clone();
-                                let muh = hooks.clone();
-                                let mut guard = muh.lock().unwrap();
-                                let name = &options[0];
-                                (*guard).remove(name);
+                                call();
                             }
                             Ok::<Loop<(),()>, ()>(Loop::Continue(()))
                         }
@@ -127,9 +86,6 @@ impl EventLoop {
             Ok(())
         }
     }
-    pub fn event_hooks() -> EventHooks {
-        Arc::new(Mutex::new(BTreeMap::new()))
-    }
 }
 
 #[cfg(test)]
@@ -143,20 +99,10 @@ mod tests {
         // Spawn a separate thread to run the loop in.
         thread::spawn(|| {
             // Create the loop.
-            let mut event_hooks = EventLoop::event_hooks();
-            let mut eventloop = EventLoop::new(&event_hooks);
-            // Send calls to be run as tasks.
+            let mut eventloop = EventLoop::new();
             eventloop.call(|| {
-                println!("Hello world 1!");
+                println!("Hello, world!");
             }).unwrap();
-            eventloop.call(|| {
-                println!("Hello world 2!");
-            }).unwrap();
-            eventloop.call(|| {
-                println!("Hello world 3!");
-            }).unwrap();
-            println!("Waiting 5 seconds to close...");
-            thread::sleep(Duration::new(5, 0));
             // Stop the loop
             eventloop.stop().unwrap();
         }).join().unwrap();
