@@ -1,9 +1,13 @@
-use std::thread;
 use crossbeam::channel::{unbounded, Sender, SendError};
-use futures::future::{lazy, ok as fok};
+use futures::future::{loop_fn, FutureResult, lazy, ok as fok, Loop};
+use std::collections::BTreeMap;
+use std::thread;
+use std::sync::{Arc, Mutex};
 
 /// Boxed function that can be sent between threads.
-pub type Closure = Box<Fn() + Send>;
+pub type Closure = Box<Fn() + Send + Sync + 'static>;
+
+pub type EventHooks = Arc<Mutex<BTreeMap<String, Closure>>>;
 
 /// Enum defining the type of an event.
 pub enum EventType {
@@ -15,22 +19,23 @@ pub enum EventType {
 /// A task to be sent to the event loop.
 pub struct EventTask {
     event_type: EventType,
-    payload: Option<Closure>
+    payload: Option<Closure>,
+    options: Option<Vec<String>>
 }
 
 impl EventTask {
     /// Create a task that will cause the event loop to stop.
     pub fn end() -> EventTask {
-        EventTask { event_type: EventType::End, payload: None }
+        EventTask { event_type: EventType::End, payload: None, options: None }
     }
     /// Create a task that will run in the event loop.
     pub fn call(func: Closure) -> EventTask {
-        EventTask { event_type: EventType::Call, payload: Some(func) }
+        EventTask { event_type: EventType::Call, payload: Some(func), options: None }
     }
 }
 
 /// An asynchronous event loop that handles tasks.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EventLoop {
     sender: Sender<EventTask>,
     running: bool
@@ -40,26 +45,27 @@ impl EventLoop {
     /// Create and start a new EventLoop.
     pub fn new() -> EventLoop {
         let (tx, rx) = unbounded::<EventTask>();
-        let eventloop = lazy(move || {
-            while let Ok(task) = rx.recv() {
-                match task.event_type {
-                    EventType::None => (),
-                    EventType::End => break,
-                    EventType::Call => {
-                        if let Some(call) = task.payload {
-                            tokio::spawn(lazy(move || {
+        thread::spawn(move || {
+            loop_fn((), move |_t| {
+                if let Ok(task) = rx.recv() {
+                    match task.event_type {
+                        EventType::None => {
+                            Ok::<Loop<(),()>, ()>(Loop::Continue(()))
+                        },
+                        EventType::End => {
+                            Ok::<Loop<(),()>, ()>(Loop::Break(()))
+                        },
+                        EventType::Call => {
+                            if let Some(call) = task.payload {
                                 call();
-                                fok::<(), ()>(())
-                            }));
+                            }
+                            Ok::<Loop<(),()>, ()>(Loop::Continue(()))
                         }
                     }
+                } else {
+                    Ok::<Loop<(),()>, ()>(Loop::Continue(()))
                 }
-            }
-            drop(rx);
-            fok::<(), ()>(())
-        });
-        thread::spawn(move || {
-            tokio::run(eventloop);
+            });
         });
         EventLoop { sender: tx, running: true }
     }
@@ -73,7 +79,7 @@ impl EventLoop {
         }
     }
     /// Send a task that will be run in the EventLoop.
-    pub fn call<F: Fn() + Send + 'static>(&self, func: F) -> Result<(), SendError<EventTask>> {
+    pub fn call<F: Fn() + Send + Sync + 'static>(&self, func: F) -> Result<(), SendError<EventTask>> {
         if self.running {
             self.sender.send(EventTask::call(Box::new(func)))
         } else {
@@ -94,18 +100,9 @@ mod tests {
         thread::spawn(|| {
             // Create the loop.
             let mut eventloop = EventLoop::new();
-            // Send calls to be run as tasks.
             eventloop.call(|| {
-                println!("Hello world 1!");
+                println!("Hello, world!");
             }).unwrap();
-            eventloop.call(|| {
-                println!("Hello world 2!");
-            }).unwrap();
-            eventloop.call(|| {
-                println!("Hello world 3!");
-            }).unwrap();
-            println!("Waiting 5 seconds to close...");
-            thread::sleep(Duration::new(5, 0));
             // Stop the loop
             eventloop.stop().unwrap();
         }).join().unwrap();
